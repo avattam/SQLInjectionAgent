@@ -55,6 +55,9 @@ def get_llm(model_name: str = "gemini-2.5-flash", temperature: float = 0.0):
 
 def _build_gemini_llm(model_name: str, temperature: float):
     """Builds a Gemini LLM via langchain-google-genai."""
+    import warnings
+    warnings.filterwarnings("ignore", category=UserWarning, message=".*automatic function calling.*")
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         print(f"[InjectionAgent] WARNING: No GEMINI_API_KEY set for model '{model_name}'. Using offline mock.")
