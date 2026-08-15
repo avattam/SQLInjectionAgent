@@ -17,6 +17,155 @@ class ScannerEngine:
         self.scan_id = scan_id
 
     def scan_repository(self) -> ScanResult:
+        """
+        Performs a repository security scan.
+        Dynamically checks if InjectionAgent is available.
+        If available, invokes InjectionAgent tool; otherwise falls back to existing AST scanner engine.
+        """
+        agent_result = self._try_scan_with_agent()
+        if agent_result is not None:
+            return agent_result
+
+        return self._scan_repository_ast()
+
+    def _try_scan_with_agent(self) -> Optional[ScanResult]:
+        """
+        Dynamically checks availability of InjectionAgent tool.
+        If importable, invokes scan_repository_sql_vulnerabilities.invoke(...).
+        """
+        try:
+            from InjectionAgent import scan_repository_sql_vulnerabilities
+
+            llm_model = os.environ.get("AGENT_LLM_MODEL") or ("gpt-4o" if os.environ.get("OPENAI_API_KEY") else "gemini-2.5-flash")
+            print(f"[ScannerEngine] InjectionAgent detected. Invoking Agent tool for '{self.target_dir}' using model '{llm_model}'...")
+
+            agent_output = scan_repository_sql_vulnerabilities.invoke({
+                "repo_path": self.target_dir,
+                "repo_url": "",
+                "branch": "main",
+                "llm_model": llm_model
+            })
+
+            if agent_output and isinstance(agent_output, dict) and "findings" in agent_output and not agent_output.get("error"):
+                print(f"[ScannerEngine] InjectionAgent scan succeeded with {len(agent_output['findings'])} findings.")
+                return self._convert_agent_output(agent_output)
+            else:
+                print(f"[ScannerEngine] InjectionAgent returned error or empty output: {agent_output.get('error')}. Falling back to AST engine.")
+                return None
+        except Exception as e:
+            print(f"[ScannerEngine] InjectionAgent unavailable or failed ({e}). Falling back to existing AST scanner engine.")
+            return None
+
+    def _convert_agent_output(self, agent_output: dict) -> ScanResult:
+        findings: List[Finding] = []
+        raw_findings = agent_output.get("findings", [])
+
+        for f in raw_findings:
+            if hasattr(f, "model_dump"):
+                f = f.model_dump()
+
+            rel_path = f.get("file_path", "")
+            line_no = f.get("line_number", 1)
+
+            # Map data flow trace
+            trace_steps: List[DataFlowStep] = []
+            df_list = f.get("data_flow_trace") or f.get("data_flow") or []
+            if isinstance(df_list, list) and df_list:
+                for item in df_list:
+                    if hasattr(item, "model_dump"):
+                        item = item.model_dump()
+                    if isinstance(item, dict):
+                        trace_steps.append(DataFlowStep(
+                            step_number=item.get("step_number", len(trace_steps) + 1),
+                            file_path=item.get("file_path", rel_path),
+                            line_number=item.get("line_number", line_no),
+                            step_type=item.get("step_type", "sink"),
+                            description=item.get("description", "SQL execution step"),
+                            code_excerpt=item.get("code_excerpt", f.get("code_excerpt", ""))
+                        ))
+
+            if not trace_steps:
+                trace_steps = [
+                    DataFlowStep(
+                        step_number=1,
+                        file_path=rel_path,
+                        line_number=line_no,
+                        step_type="sink",
+                        description="Unsafe SQL execution at database sink",
+                        code_excerpt=f.get("code_excerpt", "")
+                    )
+                ]
+
+            sev_val = f.get("severity", "High")
+            conf_val = f.get("confidence", "Likely")
+            try:
+                severity = SeverityLevel(sev_val)
+            except Exception:
+                severity = SeverityLevel.HIGH
+            try:
+                confidence = ConfidenceLevel(conf_val)
+            except Exception:
+                confidence = ConfidenceLevel.LIKELY
+
+            finding = Finding(
+                id=f.get("id") or f"FIND-{uuid.uuid4().hex[:8].upper()}",
+                scan_id=self.scan_id,
+                title=f"SQL Injection in {os.path.basename(rel_path)}",
+                summary=f.get("explanation") or "Potential SQL Injection vulnerability detected by InjectionAgent.",
+                severity=severity,
+                confidence=confidence,
+                cwe_id=f.get("cwe_id", "CWE-89"),
+                cwe_title="SQL Injection",
+                vulnerability_type=f.get("vulnerability_type", "SQL Injection"),
+                file_path=rel_path,
+                line_number=line_no,
+                line_end=line_no,
+                function_name=f.get("function_name"),
+                code_excerpt=f.get("code_excerpt", ""),
+                surrounding_context=f.get("surrounding_context", ""),
+                sql_query_snippet=f.get("sql_query_snippet") or f.get("code_excerpt", ""),
+                data_flow_trace=trace_steps,
+                tech_stack=f.get("tech_stack", "Database Access Layer"),
+                status=FindingStatus.OPEN,
+                proposed_fix=f.get("proposed_fix") or f.get("llm_safe_query", ""),
+                expected_behavior="Query executes safely using parameterized bindings.",
+                explanation=f.get("explanation", ""),
+                last_updated=datetime.now().isoformat()
+            )
+            findings.append(finding)
+
+        by_sev = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Informational": 0}
+        by_conf = {"Confirmed": 0, "Likely": 0, "Suspected": 0}
+
+        for f in findings:
+            by_sev[f.severity.value] = by_sev.get(f.severity.value, 0) + 1
+            by_conf[f.confidence.value] = by_conf.get(f.confidence.value, 0) + 1
+
+        summary = ScanSummary(
+            total_findings=len(findings),
+            by_severity=by_sev,
+            by_confidence=by_conf,
+            files_scanned=agent_output.get("files_scanned", 1),
+            scan_duration_seconds=agent_output.get("scan_duration_seconds", 0.0),
+            status="Completed"
+        )
+
+        return ScanResult(
+            scan_id=self.scan_id,
+            repo_name=agent_output.get("repo_name") or os.path.basename(self.target_dir),
+            repo_url=None,
+            branch="main",
+            commit_sha="head",
+            scanned_at=datetime.now().isoformat(),
+            summary=summary,
+            findings=findings
+        )
+
+    def _scan_repository_ast(self) -> ScanResult:
+        """
+        Original AST & static analysis scanner engine.
+        Executed when InjectionAgent is not installed or unavailable.
+        """
         start_time = datetime.now()
         files_to_scan = []
 
@@ -34,7 +183,7 @@ class ScannerEngine:
             try:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
-                
+
                 file_findings = self._analyze_file(rel_path, content)
                 findings.extend(file_findings)
             except Exception as e:
@@ -78,7 +227,7 @@ class ScannerEngine:
 
         # Find all untrusted sources in file
         sources = self._detect_sources(lines, lang)
-        
+
         # Find all SQL sinks in file
         sinks = self._detect_sinks(lines, lang)
 
@@ -105,7 +254,7 @@ class ScannerEngine:
 
             # Detect dynamic construction type
             is_concat = ("+" in window_text or "${" in window_text or "f\"" in window_text or "f'" in window_text or ".format(" in window_text or " % " in window_text)
-            
+
             # Check for unsafe ORDER BY or identifier interpolation
             is_order_by = "order by" in window_text.lower() or "group by" in window_text.lower()
 
@@ -128,7 +277,7 @@ class ScannerEngine:
             finding_id = f"FIND-{uuid.uuid4().hex[:8].upper()}"
             fn_name = self._find_enclosing_function(lines, sink_line_idx, lang)
             context_code = self._extract_context(lines, sink_line_idx)
-            
+
             proposed_fix, expected_behavior, sql_snippet = self._generate_fix_suggestion(
                 lines, sink_line_idx, sink["framework"], lang, var_name
             )
