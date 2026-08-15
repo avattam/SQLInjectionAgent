@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Defensive SQL Vulnerability Review Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <!-- Top Navigation Bar -->
+    <header class="app-header">
+        <div class="header-brand">
+            <div class="brand-icon">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    <path d="M12 8v4"/>
+                    <path d="M12 16h.01"/>
+                </svg>
+            </div>
+            <div>
+                <h1>Defensive SQL Vulnerability Review Agent</h1>
+                <span class="version-tag">FastAPI Taint-Engine v1.0 | Port 4003</span>
+            </div>
+        </div>
+        <div class="header-actions">
+            <div class="status-indicator">
+                <span class="pulse-dot"></span>
+                <span id="systemStatusText">Agent Standby</span>
+            </div>
+            <button class="btn btn-secondary" onclick="openAuditModal()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                Audit Log
+            </button>
+        </div>
+    </header>
+
+    <main class="app-container">
+        <!-- Scan Configuration Panel -->
+        <section class="card config-card">
+            <div class="card-header">
+                <h2>Repository Scan Configuration</h2>
+                <span class="badge badge-info">Static Taint Analysis</span>
+            </div>
+            <div class="config-grid">
+                <div class="form-group">
+                    <label for="sampleRepoSelect">Select Sample Repository</label>
+                    <select id="sampleRepoSelect" class="form-control" onchange="onSampleSelected()">
+                        <option value="">-- Choose a sample or enter URL below --</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="repoUrlInput">Git Repository URL (Optional)</label>
+                    <input type="text" id="repoUrlInput" class="form-control" placeholder="https://github.com/org/vulnerable-repo.git">
+                </div>
+                <div class="form-group">
+                    <label for="branchInput">Branch / Commit / PR</label>
+                    <input type="text" id="branchInput" class="form-control" value="main">
+                </div>
+                <div class="form-group align-end">
+                    <button id="startScanBtn" class="btn btn-primary btn-block" onclick="startRepositoryScan()">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        Start AST & Taint Scan
+                    </button>
+                </div>
+            </div>
+
+            <!-- Real-time Scan Progress Bar -->
+            <div id="scanProgressContainer" class="progress-container hidden">
+                <div class="progress-info">
+                    <span id="scanStatusMsg">Initializing repository clone...</span>
+                    <span id="scanPercentText">0%</span>
+                </div>
+                <div class="progress-bar">
+                    <div id="scanProgressBar" class="progress-fill" style="width: 0%;"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Summary Dashboard Cards -->
+        <section class="metrics-grid">
+            <div class="metric-card metric-total">
+                <div class="metric-value" id="metricTotal">0</div>
+                <div class="metric-label">Total Findings</div>
+            </div>
+            <div class="metric-card metric-critical">
+                <div class="metric-value" id="metricCritical">0</div>
+                <div class="metric-label">Critical Vulnerabilities</div>
+            </div>
+            <div class="metric-card metric-high">
+                <div class="metric-value" id="metricHigh">0</div>
+                <div class="metric-label">High Risk</div>
+            </div>
+            <div class="metric-card metric-medium">
+                <div class="metric-value" id="metricMedium">0</div>
+                <div class="metric-label">Medium Risk</div>
+            </div>
+            <div class="metric-card metric-files">
+                <div class="metric-value" id="metricFiles">0</div>
+                <div class="metric-label">Files Scanned</div>
+            </div>
+            <div class="metric-card metric-duration">
+                <div class="metric-value" id="metricDuration">0s</div>
+                <div class="metric-label">Scan Duration</div>
+            </div>
+        </section>
+
+        <!-- Findings List Panel & Filters -->
+        <section class="card findings-card">
+            <div class="card-header flex-between">
+                <div>
+                    <h2>Vulnerability Findings Dashboard</h2>
+                    <p class="subtitle">Filter and select findings to inspect source-to-sink traces and approve safe parameterized fixes.</p>
+                </div>
+                <div class="search-box">
+                    <input type="text" id="searchInput" class="form-control" placeholder="Search by file, CWE, title..." onkeyup="filterFindings()">
+                </div>
+            </div>
+
+            <!-- Filter Controls -->
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <span class="filter-label">Severity:</span>
+                    <button class="chip active" data-filter-type="severity" data-value="ALL" onclick="setFilter('severity', 'ALL', this)">All</button>
+                    <button class="chip chip-critical" data-filter-type="severity" data-value="Critical" onclick="setFilter('severity', 'Critical', this)">Critical</button>
+                    <button class="chip chip-high" data-filter-type="severity" data-value="High" onclick="setFilter('severity', 'High', this)">High</button>
+                    <button class="chip chip-medium" data-filter-type="severity" data-value="Medium" onclick="setFilter('severity', 'Medium', this)">Medium</button>
+                </div>
+
+                <div class="filter-group">
+                    <span class="filter-label">Confidence:</span>
+                    <button class="chip active" data-filter-type="confidence" data-value="ALL" onclick="setFilter('confidence', 'ALL', this)">All</button>
+                    <button class="chip" data-filter-type="confidence" data-value="Confirmed" onclick="setFilter('confidence', 'Confirmed', this)">Confirmed</button>
+                    <button class="chip" data-filter-type="confidence" data-value="Likely" onclick="setFilter('confidence', 'Likely', this)">Likely</button>
+                    <button class="chip" data-filter-type="confidence" data-value="Suspected" onclick="setFilter('confidence', 'Suspected', this)">Suspected</button>
+                </div>
+
+                <div class="filter-group">
+                    <span class="filter-label">Status:</span>
+                    <button class="chip active" data-filter-type="status" data-value="ALL" onclick="setFilter('status', 'ALL', this)">All</button>
+                    <button class="chip" data-filter-type="status" data-value="Open" onclick="setFilter('status', 'Open', this)">Open</button>
+                    <button class="chip" data-filter-type="status" data-value="Fixed" onclick="setFilter('status', 'Fixed', this)">Fixed</button>
+                    <button class="chip" data-filter-type="status" data-value="False Positive" onclick="setFilter('status', 'False Positive', this)">False Positive</button>
+                </div>
+            </div>
+
+            <!-- Findings Table -->
+            <div class="table-container">
+                <table class="findings-table">
+                    <thead>
+                        <tr>
+                            <th>Severity</th>
+                            <th>Confidence</th>
+                            <th>CWE / Type</th>
+                            <th>File & Line</th>
+                            <th>Description</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="findingsTableBody">
+                        <tr>
+                            <td colspan="7" class="text-center empty-state">
+                                No scan executed yet. Select a sample repository above and click <strong>Start AST & Taint Scan</strong>.
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <!-- Review Fix Modal Drawer -->
+    <div id="reviewModal" class="modal-backdrop hidden">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-header">
+                <div>
+                    <span class="badge" id="modalSeverityBadge">Critical</span>
+                    <h2 id="modalTitle">Review Fix & Data-Flow Trace</h2>
+                    <span class="subtext" id="modalCweText">CWE-89 SQL Injection</span>
+                </div>
+                <button class="close-btn" onclick="closeReviewModal()">&times;</button>
+            </div>
+
+            <div class="modal-body">
+                <!-- Section 1: Security Explanation -->
+                <div class="detail-block">
+                    <h3>Vulnerability Overview & Security Explanation</h3>
+                    <p id="modalExplanation" class="explanation-text"></p>
+                </div>
+
+                <!-- Section 2: Source to Sink Data Flow Trace -->
+                <div class="detail-block">
+                    <h3>Source-to-Sink Data-Flow Evidence</h3>
+                    <div id="traceContainer" class="trace-timeline"></div>
+                </div>
+
+                <!-- Section 3: Surrounding Context Code -->
+                <div class="detail-block">
+                    <h3>Surrounding Code Context (<span id="modalFilePath"></span>)</h3>
+                    <pre class="code-block" id="modalContextCode"></pre>
+                </div>
+
+                <!-- Section 4: Unified Code Diff Preview & Patch Editor -->
+                <div class="detail-block">
+                    <div class="flex-between align-center">
+                        <h3>Interactive Remediation Diff Preview</h3>
+                        <span class="badge badge-success">Safe Parameterization</span>
+                    </div>
+                    <pre class="diff-block" id="modalDiffPreview"></pre>
+
+                    <div class="form-group margin-top-md">
+                        <label for="patchEditor">Human Reviewer Proposed Fix Code (Editable):</label>
+                        <textarea id="patchEditor" class="code-editor" rows="3"></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="branchInputModal">Target Security Branch (Optional):</label>
+                        <input type="text" id="branchInputModal" class="form-control" placeholder="security-fix/cwe-89-patch">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="reviewComment">Review Comment / Rationale:</label>
+                        <input type="text" id="reviewComment" class="form-control" placeholder="Approved parameterized replacement after code review.">
+                    </div>
+                </div>
+
+                <!-- Section 5: Re-Verification Result Banner -->
+                <div id="verificationBanner" class="verification-banner hidden"></div>
+            </div>
+
+            <div class="modal-footer">
+                <button class="btn btn-danger-outline" onclick="markFindingStatus('False Positive')">Mark False Positive</button>
+                <button class="btn btn-warning-outline" onclick="markFindingStatus('Accepted Risk')">Accept Risk</button>
+                <button class="btn btn-secondary" onclick="closeReviewModal()">Cancel</button>
+                <button class="btn btn-success" onclick="applyApprovedFix()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                    Approve & Apply Patch
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Audit Log Modal -->
+    <div id="auditModal" class="modal-backdrop hidden">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-header">
+                <h2>Audit Log & Remediation History</h2>
+                <button class="close-btn" onclick="closeAuditModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="table-container">
+                    <table class="findings-table">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Action</th>
+                                <th>Reviewer</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="auditTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
