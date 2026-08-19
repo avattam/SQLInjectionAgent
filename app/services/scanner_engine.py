@@ -3,6 +3,9 @@ import re
 import uuid
 from typing import List, Dict, Any, Tuple, Optional
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".env")))
 
 from app.models.schemas import Finding, DataFlowStep, SeverityLevel, ConfidenceLevel, FindingStatus, ScanSummary, ScanResult
 from app.services.rules_registry import UNTRUSTED_SOURCES, SQL_SINKS, SAFE_SANITIZERS, SAFE_PARAMETERIZED_PATTERNS

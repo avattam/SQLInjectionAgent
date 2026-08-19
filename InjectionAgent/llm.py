@@ -138,18 +138,37 @@ class _OpenAIReasoningWrapper:
 class _MockLLM:
     """
     Offline mock LLM for unit testing without a live API key.
-    Always returns a positive SQL injection finding so pipeline logic can be verified.
+    Dynamically tailors proposed fixes to the snippet context instead of static hardcoding.
     """
     def invoke(self, messages):
         from langchain_core.messages import AIMessage
-        return AIMessage(content="""{
+        import re
+
+        prompt_text = ""
+        for m in messages:
+            prompt_text += getattr(m, "content", str(m)) + "\n"
+
+        is_js = "Language: javascript" in prompt_text or "server.js" in prompt_text or "Node" in prompt_text
+        
+        # Extract snippet or variable if possible
+        var_match = re.search(r'([a-zA-Z0-9_]+)\s*(?:=|in|\+)', prompt_text)
+        var_name = var_match.group(1) if var_match else "user_input"
+
+        if is_js:
+            proposed_fix = f"client.query('SELECT * FROM items WHERE id = $1', [{var_name}]);"
+            safe_example = f"client.query('SELECT * FROM items WHERE id = $1', [{var_name}]);"
+        else:
+            proposed_fix = f"cursor.execute('SELECT * FROM items WHERE id = ?', ({var_name},))"
+            safe_example = f"cursor.execute('SELECT * FROM items WHERE id = ?', ({var_name},))"
+
+        return AIMessage(content=f"""{{
   "is_sql_injection": true,
   "severity": "High",
   "confidence": "Likely",
   "unsafe_pattern": "dynamic SQL construction with user-controlled input",
-  "tainted_variable": "user_input",
+  "tainted_variable": "{var_name}",
   "explanation": "[MOCK] Dynamic query construction with user-controlled input reaches SQL execution sink without parameterization.",
-  "proposed_fix": "cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))",
-  "safe_query_example": "cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))",
+  "proposed_fix": "{proposed_fix}",
+  "safe_query_example": "{safe_example}",
   "model": "mock-offline"
-}""")
+}}""")
